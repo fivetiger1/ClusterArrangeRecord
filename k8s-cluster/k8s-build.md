@@ -7,17 +7,17 @@
 ##  3.服务器初始化
       CentOS Linux release 7.9.2009 服务器创建完毕，网络桥接模式（由物理服务器ip段分配）  
 ####  1.配置静态ip
-      `cat /etc/sysconfig/network-scripts/ifcfg-ens33`
-      ```TYPE="Ethernet"
-PROXY_METHOD="none"
-BROWSER_ONLY="no"
-BOOTPROTO="static"
-DEFROUTE="yes"
-IPV4_FAILURE_FATAL="no"
-NAME="ens33"
-UUID="402efaa6-7c77-4f69-b80b-6695d9f11184"
-DEVICE="ens33"
-ONBOOT="yes"
-IPADDR="192.168.1.12"
-PREFIX="24"
-GATEWAY="192.168.1.1"```
+      cat /etc/sysconfig/network-scripts/ifcfg-ens33
+      
+      TYPE="Ethernet"
+      PROXY_METHOD="none"
+      BROWSER_ONLY="no"
+      BOOTPROTO="static"
+      DEFROUTE="yes"
+      NAME="ens33"
+      UUID="5f1aa1f4-b4c2-4c77-b3ee-75211b9e0497"
+      DEVICE="ens33"
+      ONBOOT="yes"
+      IPADDR=192.168.1.21
+      NETMASK=255.255.255.0
+      GATEWAY=192.168.1.1
