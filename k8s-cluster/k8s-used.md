@@ -165,5 +165,212 @@
 ####    查看pod时会发现属于ingress控制器的两个pod并没有处于runing状态，不要紧张，这两个pod属于job类型pod,特殊情况下才会运行，ingress-nginx-admission-create 是在创建ingress控制器资源验证ingress格式以及设置初始状态，保证ingress控制器能正确的处理新的ingress资源，而ingress-nginx-admission-patch 是在控制器运行时，检测到ingress配置更新，对ingress资源进行必要的修改或验证（例如修改后服务路由不会冲突，更新过程中保持服务的连续性）。只要状态处于completed中就是正常的。
         # kubectl get ingress 
 ####    在这里可以看到ingress已经存在，并且已分配地址，我这里选择的地址是属于该网段的一个未使用ip，这个是需要配置到某个节点上。然后我们通过访问ingress.yaml中已配置好的路径/hello和/进行访问即可验证ingress已经正常部署，划分流量。
-##   4. ingress发布模式，金丝雀发布(问题记录，configmap怎么不重启pod情况下动态修改)
+##   4. ingress发布模式，金丝雀发布(问题记录，configmap怎么不重启pod情况下动态修改)，在这里我们验证第二种模式，1.同namespace下的发布（生产环境有两种版本，切过去新版本固定占比流量观察），2.不同namespace下的发布（生产环境只有一个版本，切过去预发环境的固定占比流量观察），一般正常情况下使用第一种，第二种属于无意刷到并发现一些问题记录在下面
+        # cat /home/go/project/hellok8s-v10.yaml
+        apiVersion: v1
+        kind: Service
+        metadata: 
+        name: service-hellok8s-clusterip
+        namespace: uat
+        spec:
+        type: ClusterIP
+        selector:
+        app: hellok8s
+        version: v10
+        ports:
+        - port: 3000
+        targetPort: 3000
+
+        --- 
+
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+        name: hellok8s-deployment
+        namespace: uat
+        spec:
+        replicas: 1
+        selector:
+        matchLabels:
+            app: hellok8s
+            version: v10
+        template:
+        metadata:
+            labels:
+            app: hellok8s
+            version: v10
+        spec:
+            containers:
+            - name: hellok8s-container
+            image: registry.cn-hangzhou.aliyuncs.com/goproject/k8s_project:go-app-v10
+        # kubectl apply -f  /home/go/project/hellok8s-v10.yaml
+
+        # cat /home/go/project/hellok8s-v9.yaml
+        apiVersion: v1
+        kind: Service
+        metadata: 
+        name: service-hellok8s-clusterip
+        namespace: prod
+        spec:
+        type: ClusterIP
+        selector:
+        app: hellok8s
+        version: v9
+        ports:
+        - port: 3000
+        targetPort: 3000
+
+        --- 
+
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+        name: hellok8s-deployment
+        namespace: prod
+        spec:
+        replicas: 1
+        selector:
+        matchLabels:
+            app: hellok8s
+            version: v9
+        template:
+        metadata:
+            labels:
+            app: hellok8s
+            version: v9
+        spec:
+            containers:
+            - name: hellok8s-container
+            image: registry.cn-hangzhou.aliyuncs.com/goproject/k8s_project:go-app-v9
+        # kubectl apply -f /home/go/project/hellok8s-v9.yaml
+
+        # cat /home/go/project/nginx.yaml
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+        name: nginx
+        namespace: prod
+        spec:
+        replicas: 1
+        selector:
+            matchLabels:
+            app: nginx
+        template:
+            metadata:
+            labels:
+                app: nginx
+            spec:
+            containers:
+            - name: nginx
+                image: "openresty/openresty:centos"
+                ports:
+                - name: http
+                protocol: TCP
+                containerPort: 80
+                volumeMounts:
+                - mountPath: /usr/local/openresty/nginx/conf/nginx.conf
+                name: config
+                subPath: nginx.conf
+            volumes:
+            - name: config
+                configMap:
+                name: nginx
+        ---
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+        labels:
+            app: nginx
+        name: nginx
+        namespace: prod
+        data:
+        nginx.conf: |-
+            worker_processes  1;
+            events {
+                accept_mutex on;
+                multi_accept on;
+                use epoll;
+                worker_connections  1024;
+            }
+            http {
+                ignore_invalid_headers off;
+                server {
+                    listen 80;
+                    location / {
+                        access_by_lua '
+                            local header_str = ngx.say("Hello NGINX")
+                        ';
+                    }
+                }
+            }
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+        name: nginx
+        namespace: prod
+        spec:
+        type: ClusterIP
+        ports:
+        - port: 80
+            protocol: TCP
+            name: http
+        selector:
+            app: nginx
+        # kubectl apply -f /home/go/project/nginx.yaml
+####    这是go项目的两个版本，以及一个是用configmap有问题挂载方式的nginx，这里使用go项目对比nginx说明金丝雀发布的过程
+        # cat /home/go/project/ingress-prod.yaml
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+        name: hello-ingress
+        namespace: prod
+        annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "false"
+        spec:
+        ingressClassName: nginx
+        rules:
+            - host: prod.hello.com
+            http:
+                paths:
+                - path: /hello
+                    pathType: Prefix
+                    backend:
+                    service:
+                        name: service-hellok8s-clusterip
+                        port:
+                        number: 3000
+                - path: /
+                    pathType: Prefix
+                    backend:
+                    service:
+                        name: nginx
+                        port:
+                        number: 80
+        # kubectl apply -f /home/go/project/ingress-prod.yaml
+####    以上部署 是模拟生产环境的多服务ingress情况，目前通过ingress-prod.yaml我们可以看出，我们拥有两个服务，一个是go项目的v9版本一个是nginx，我们需要使用金丝雀发布模式来引入uat环境下go项目的v10版本10%的流量到生产环境，这里配置同一个host，对应路径不同，从而访问不同的服务。
+        # cat /home/go/project/ingress-canary.yaml
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+        name: hello-ingress-canary
+        namespace: uat
+        annotations:
+            nginx.ingress.kubernetes.io/ssl-redirect: "false"
+            nginx.ingress.kubernetes.io/canary: "true"
+            nginx.ingress.kubernetes.io/canary-weight: "10"
+        spec:
+        ingressClassName: nginx
+        rules:
+            - host: prod.hello.com
+            http:
+                paths:
+                - path: /hello
+                    pathType: Prefix
+                    backend:
+                    service:
+                        name: service-hellok8s-clusterip
+                        port:
+                        number: 3000
+####    这个配置就是切流量过来的ingress配置，注意metadata.namespace字段，这里是uat,但是我们下面指定serivce时并没有说明service的namespac，这里是因为ingress中service和ingress处于一个命名空间，在ingress配置中声明即可。然后看metadata.annotations，这里的专业术语为注解，类似的还有 针对cookie和header的流量引入，header>cookie>weight其实到这里 我们通过访问就发现已经实现了 10%的访问到uat的版本中，观察一段时间后，就可以删除该ingress-canary资源，在生产环境滚动更新v9版本即可。但是在这里我当时模拟的时候，uat环境是已有v10版本的ingress组件在运行的，也就是说除了这个ingress-canary还有另外一个ingress提供访问，我想模拟的是UAT-ingress和prod-ingress提供预发和生产的入口，然后我再创建一个ingress-canary作为切流量的组件，因为是初学阶段，只发现了问题现象。ingress-canary和ingress-uat那个晚运行那个访问就是404，过程中我连入ingress-controller容器查看配置文件的变化，发现ingress-canary没有在配置中体现，后来我实验了一遍全部都在prod中进行金丝雀发布，（也就是前文的方式一），才明白过来，在方式二中我测试的这三个ingress组件其中ingress-canary和ingress-uat是相互冲突的，他们指向的是同一个service,那么也就无法既分10%的流量访问进来，又提供全部的访问（并非数值上而是逻辑上），转换到第二种方式上，就相当于，首先我起了两个版本的go项目在生产环境，在这基础上我已有ingress-prod老版本的，然后我起了一个ingress-prod-canary引流新版本，随后我又起了一个ingress-pord负责新版本的访问，后两个就冲突了，而且我观察ingress-controller容器内配置变化，后起的servicename字段是会被冲掉的，也就是正常的namespace，servername，service，port是缺失的，一个探索过程中有意思的点记录一下。
 
